@@ -1,6 +1,7 @@
 *.png
 *.jpg
 *.pdf
+*.done
 /cache
 /cache-*
 /node_modules

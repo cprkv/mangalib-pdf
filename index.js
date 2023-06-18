@@ -77,7 +77,8 @@ async function getWithCacheAsync(name, creator) {
 }
 
 async function downloadFile(url, outfile) {
-  if (fs.existsSync(outfile)) {
+  const finishMarker = `${outfile}.done`;
+  if (fs.existsSync(outfile) && fs.existsSync(finishMarker)) {
     console.log(`${outfile} already exists!`);
     return;
   }
@@ -94,12 +95,13 @@ async function downloadFile(url, outfile) {
     });
 
     stream.on("finish", () => {
+      fs.writeFileSync(finishMarker, "");
       resolve();
     });
   });
 }
 
-// pages: {text}|{image}[]
+// pages[]: { text } | { image }
 async function createPDF(outFile, pages) {
   return new Promise((resolve, reject) => {
     const stream = fs.createWriteStream(outFile);
@@ -115,7 +117,7 @@ async function createPDF(outFile, pages) {
       autoFirstPage: false,
       size: "A4",
       margin: 0,
-      font: fs.readFileSync(path.join(__dirname, "PTF55E.ttf")), // TODO: pt root sans
+      font: fs.readFileSync(path.join(__dirname, "pt-root-ui_medium.ttf")),
     });
     // A4 (595.28 x 841.89)
     doc.pipe(stream);
@@ -239,7 +241,7 @@ runAsync(async () => {
     const chapterName = [
       { h1: mangaName },
       { h2: `Том ${chapter_volume}` },
-      { h3: `Глава ${chapter_number} - ${chapter_name}` },
+      { h3: `Глава ${chapter_number}: ${chapter_name}` },
     ];
     const chapterUrl = `${mangaUrl}/v${chapter_volume}/c${chapter_number}`;
     console.log(chapterNameSlug, chapterUrl);
