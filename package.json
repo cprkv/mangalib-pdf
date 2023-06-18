@@ -11,6 +11,7 @@
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
     "pdfkit": "^0.13.0",
-    "superagent": "^8.0.9"
+    "superagent": "^8.0.9",
+    "yargs": "^17.7.2"
   }
 }

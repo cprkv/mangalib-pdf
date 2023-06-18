@@ -2,16 +2,21 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const url = require("url");
-const readline = require("readline").promises.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+const yargs = require("yargs/yargs");
+const { hideBin } = require("yargs/helpers");
+const argv = yargs(hideBin(process.argv)).argv;
 
 const sa = require("superagent");
 const cheerio = require("cheerio");
 const PDFDocument = require("pdfkit");
 
-const { mangaUrl, session } = require("./config.json");
+const { session } = require("./config.json");
+
+const mangaUrl = argv.url;
+if (!mangaUrl) {
+  console.error("--url argument missing");
+  process.exit(-1);
+}
 
 function withAuthorization(req) {
   const mangaUrlParsed = url.parse(mangaUrl);
@@ -88,6 +93,10 @@ async function downloadFile(url, outfile) {
     const stream = fs.createWriteStream(outfile);
     const req = withAuthorization(sa.get(encodeURI(url)));
     req.pipe(stream);
+
+    req.on("response", (res) => {
+      console.log(`response: ${res.status}`);
+    });
 
     stream.on("error", () => {
       console.log("stream error");
@@ -215,8 +224,13 @@ runAsync(async () => {
   const chaptersByVolume = groupBy(chapters.list, "chapter_volume");
   console.log(`volumes: ${Object.keys(chaptersByVolume).join(",")}`);
 
-  let volume = await readline.question("select volume:");
-  volume = volume.trim();
+  let volume = argv.volume;
+  if (!volume) {
+    console.error("--volume argument missing");
+    process.exit(-1);
+  }
+
+  volume = volume.toString().trim();
 
   const chaptersSelected = chapters.list.filter(
     (x) => x.chapter_volume == volume
@@ -225,7 +239,6 @@ runAsync(async () => {
     throw new Error(`volume '${volume}' not found`);
   }
 
-  readline.close();
   chaptersSelected.sort((a, b) => +a.chapter_number - +b.chapter_number);
 
   console.log("selected volume:", chaptersSelected);
