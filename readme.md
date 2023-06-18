@@ -24,3 +24,7 @@
 node index.js --url https://mangalib.me/toradora
 node index.js --url https://mangalib.me/toradora --volume 10
 ```
+
+## Известные проблемы
+
+Иногда скрипт виснет. Ничего страшного, его нужно просто перезапустить с теми же параметрами, скачка продолжится с того же места.
