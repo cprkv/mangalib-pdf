@@ -8,7 +8,7 @@
 
 ```json
 {
-  "mangaUrl": "https://mangalib.me/goodbye-eri/v0/c0",
+  "mangaUrl": "https://mangalib.me/toradora",
   "session": null
 }
 ```
