@@ -1,0 +1,7 @@
+*.png
+*.jpg
+*.pdf
+/cache
+/cache-*
+/node_modules
+config.json
