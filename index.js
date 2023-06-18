@@ -2,6 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const url = require("url");
+const readline = require("readline").promises.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
 
 const sa = require("superagent");
 const cheerio = require("cheerio");
@@ -81,7 +85,7 @@ async function downloadFile(url, outfile) {
   return new Promise((resolve, reject) => {
     console.log(`downloading ${url} to ${outfile}`);
     const stream = fs.createWriteStream(outfile);
-    const req = withAuthorization(sa.get(url));
+    const req = withAuthorization(sa.get(encodeURI(url)));
     req.pipe(stream);
 
     stream.on("error", () => {
@@ -95,6 +99,7 @@ async function downloadFile(url, outfile) {
   });
 }
 
+// pages: {text}|{image}[]
 async function createPDF(outFile, pages) {
   return new Promise((resolve, reject) => {
     const stream = fs.createWriteStream(outFile);
@@ -106,39 +111,53 @@ async function createPDF(outFile, pages) {
       resolve();
     });
 
-    doc = new PDFDocument({ autoFirstPage: false, size: "A4", margin: 0 });
+    doc = new PDFDocument({
+      autoFirstPage: false,
+      size: "A4",
+      margin: 0,
+      font: fs.readFileSync(path.join(__dirname, "PTF55E.ttf")), // TODO: pt root sans
+    });
     // A4 (595.28 x 841.89)
     doc.pipe(stream);
 
     for (const page of pages) {
-      console.log(`adding page ${page} to pdf!`);
-      doc.addPage();
-      doc.image(page, {
-        fit: [595.28, 841.89],
-        // cover: [595.28, 841.89],
-        align: "center",
-        valign: "center",
-      });
+      if (page.text) {
+        doc.addPage();
+        for (const t of page.text) {
+          if (t.h1) {
+            doc.fontSize(64);
+            doc.text(t.h1);
+          } else if (t.h2) {
+            doc.fontSize(48);
+            doc.text(t.h2);
+          } else if (t.h3) {
+            doc.fontSize(32);
+            doc.text(t.h3);
+          }
+        }
+      } else if (page.image) {
+        console.log(`adding image ${page.image} to pdf!`);
+        doc.addPage();
+        doc.image(page.image, {
+          fit: [595.28, 841.89],
+          // cover: [595.28, 841.89],
+          align: "center",
+          valign: "center",
+        });
+      } else {
+        return reject(new Error(`unknown page structure:`, page));
+      }
     }
 
     doc.end();
   });
 }
 
-runAsync(async () => {
-  const html = await getWithCacheAsync(mangaUrl, async () => getHtml(mangaUrl));
+async function downloadChapter(mangaName, chapterUrl) {
+  const html = await getWithCacheAsync(chapterUrl, async () =>
+    getHtml(chapterUrl)
+  );
   const window = await getMangaData(html);
-
-  const mangaName =
-    window.__DATA__.current.chapter_name ||
-    window.__DATA__.manga.slug ||
-    window.__DATA__.current.id.toString() ||
-    window.__DATA__.manga.slug.id.toString();
-  if (!mangaName) {
-    console.dir(window.__DATA__);
-    throw new Error("no manga name!");
-  }
-  console.log(`manga name: "${mangaName}"`);
 
   const pages = [];
   for (const { p, u } of window.__pg) {
@@ -159,13 +178,8 @@ runAsync(async () => {
     page.file = outfile;
   }
 
-  await createPDF(
-    `${mangaName}.pdf`,
-    pages.map((x) => x.file)
-  );
-
-  console.log("done!");
-});
+  return pages.map((x) => x.file);
+}
 
 function runAsync(func) {
   func().catch((e) => {
@@ -174,3 +188,73 @@ function runAsync(func) {
     process.exit(1);
   });
 }
+
+function groupBy(xs, key) {
+  return xs.reduce((rv, x) => {
+    (rv[x[key]] = rv[x[key]] || []).push(x);
+    return rv;
+  }, {});
+}
+
+runAsync(async () => {
+  const html = await getWithCacheAsync(mangaUrl, async () => getHtml(mangaUrl));
+  const window = await getMangaData(html);
+
+  const { manga, chapters } = window.__DATA__;
+
+  const mangaName = manga.rusName || manga.engName || manga.slug;
+  if (!mangaName) {
+    console.dir(window.__DATA__);
+    throw new Error("no manga name!");
+  }
+
+  console.log(`manga name: ${mangaName}`);
+
+  const chaptersByVolume = groupBy(chapters.list, "chapter_volume");
+  console.log(`volumes: ${Object.keys(chaptersByVolume).join(",")}`);
+
+  let volume = await readline.question("select volume:");
+  volume = volume.trim();
+
+  const chaptersSelected = chapters.list.filter(
+    (x) => x.chapter_volume == volume
+  );
+  if (chaptersSelected.length == 0) {
+    throw new Error(`volume '${volume}' not found`);
+  }
+
+  readline.close();
+  chaptersSelected.sort((a, b) => +a.chapter_number - +b.chapter_number);
+
+  console.log("selected volume:", chaptersSelected);
+  const volumePages = []; // {text}|{image}
+
+  for (const {
+    chapter_slug,
+    chapter_name,
+    chapter_number,
+    chapter_volume,
+  } of chaptersSelected) {
+    const chapterNameSlug = `${manga.slug}-v${chapter_volume}-c${chapter_number}`;
+    const chapterName = [
+      { h1: mangaName },
+      { h2: `Том ${chapter_volume}` },
+      { h3: `Глава ${chapter_number} - ${chapter_name}` },
+    ];
+    const chapterUrl = `${mangaUrl}/v${chapter_volume}/c${chapter_number}`;
+    console.log(chapterNameSlug, chapterUrl);
+
+    const chapterPages = await downloadChapter(chapterNameSlug, chapterUrl);
+
+    volumePages.push({ text: chapterName });
+    for (const image of chapterPages) {
+      volumePages.push({ image });
+    }
+  }
+
+  console.dir(volumePages);
+  const outPdf = `${manga.slug}-v${volume}.pdf`;
+  await createPDF(outPdf, volumePages);
+
+  console.log("done!", outPdf);
+});
