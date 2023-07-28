@@ -263,7 +263,10 @@ runAsync(async () => {
 
     volumePages.push({ text: chapterName });
     for (const image of chapterPages) {
-      volumePages.push({ image });
+      // skip inappropriate formats
+      if (!image.endsWith(".gif")) {
+        volumePages.push({ image });
+      }
     }
   }
 

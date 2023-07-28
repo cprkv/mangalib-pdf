@@ -1,5 +1,7 @@
 *.png
 *.jpg
+*.jpeg
+*.gif
 *.pdf
 *.done
 /cache
