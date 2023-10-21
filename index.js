@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const url = require("url");
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
+const { spawn } = require("node:child_process");
 const argv = yargs(hideBin(process.argv)).argv;
 
 const sa = require("superagent");
@@ -27,6 +28,41 @@ function withAuthorization(req) {
       .set("cookie", `mangalib_session=${session}`);
   }
   return req.set("referer", referer);
+}
+
+async function isOkImage(path) {
+  const p = spawn(`./image-magic/magick.exe`, ["identify", path]);
+  return new Promise((resolve) => {
+    p.stdout.on("data", (x) => {
+      process.stdout.write(x.toString());
+    });
+    p.stderr.on("data", (x) => {
+      process.stderr.write(x.toString());
+    });
+    p.on("exit", (code) => {
+      resolve(code == 0);
+    });
+  });
+}
+
+async function convertToPng(imagePath, convertPath) {
+  console.log(`converting image: ${imagePath} -> ${convertPath}`);
+  const p = spawn(`./image-magic/magick.exe`, [imagePath, convertPath]);
+  return new Promise((resolve) => {
+    p.stdout.on("data", (x) => {
+      process.stdout.write(x.toString());
+    });
+    p.stderr.on("data", (x) => {
+      process.stderr.write(x.toString());
+    });
+    p.on("exit", (code) => {
+      if (code == 0) {
+        resolve();
+      } else {
+        reject(`bad status code: ${code}`);
+      }
+    });
+  });
 }
 
 async function getHtml(url) {
@@ -71,6 +107,7 @@ async function getWithCacheAsync(name, creator) {
 
   const hash = crypto.createHash("md5").update(name).digest("hex");
   const cacheFile = "./cache/" + hash;
+  console.log(`cache ${name} -> ${cacheFile}`);
 
   if (fs.existsSync(cacheFile)) {
     return fs.readFileSync(cacheFile, "utf-8");
@@ -88,26 +125,21 @@ async function downloadFile(url, outfile) {
     return;
   }
 
-  return new Promise((resolve, reject) => {
-    console.log(`downloading ${url} to ${outfile}`);
-    const stream = fs.createWriteStream(outfile);
-    const req = withAuthorization(sa.get(encodeURI(url)));
-    req.pipe(stream);
+  console.log(`downloading ${url} to ${outfile}`);
+  const req = withAuthorization(sa.get(encodeURI(url)));
+  const res = await req;
 
-    req.on("response", (res) => {
-      console.log(`response: ${res.status}`);
-    });
+  if (res.status !== 200) {
+    throw new Error(`bad status code: ${res.status}`);
+  }
 
-    stream.on("error", () => {
-      console.log("stream error");
-      reject("stream error");
-    });
+  await fs.promises.writeFile(outfile, res.body);
 
-    stream.on("finish", () => {
-      fs.writeFileSync(finishMarker, "");
-      resolve();
-    });
-  });
+  if (!(await isOkImage(outfile))) {
+    throw new Error(`bad image: ${outfile}`);
+  }
+
+  await fs.promises.writeFile(finishMarker, "");
 }
 
 // pages[]: { text } | { image }
@@ -173,8 +205,12 @@ async function downloadChapter(mangaName, chapterUrl) {
   const pages = [];
   for (const { p, u } of window.__pg) {
     const num = p;
-    const url = window.__info.servers.main + window.__info.img.url + u;
-    pages.push({ num, url });
+    const urls = [];
+    for (key of Object.keys(window.__info.servers)) {
+      const url = window.__info.servers[key] + window.__info.img.url + u;
+      urls.push(url);
+    }
+    pages.push({ num, urls });
   }
 
   if (!fs.existsSync(mangaName)) {
@@ -182,11 +218,23 @@ async function downloadChapter(mangaName, chapterUrl) {
   }
 
   for (const page of pages) {
-    const { num, url } = page;
-    const extension = path.extname(url);
-    const outfile = path.join(mangaName, num + extension);
-    await downloadFile(url, outfile);
-    page.file = outfile;
+    const { num, urls } = page;
+
+    for (const url of urls) {
+      try {
+        const extension = path.extname(url);
+        const outfile = path.join(mangaName, num + extension);
+        await downloadFile(url, outfile);
+        page.file = outfile;
+        break;
+      } catch (err) {
+        console.log(`error download image: ${err}`);
+      }
+    }
+
+    if (!page.file) {
+      throw new Error(`error downloading image`);
+    }
   }
 
   return pages.map((x) => x.file);
@@ -243,6 +291,7 @@ runAsync(async () => {
 
   console.log("selected volume:", chaptersSelected);
   const volumePages = []; // {text}|{image}
+  const tmpImages = [];
 
   for (const {
     chapter_slug,
@@ -264,15 +313,20 @@ runAsync(async () => {
     volumePages.push({ text: chapterName });
     for (const image of chapterPages) {
       // skip inappropriate formats
-      if (!image.endsWith(".gif")) {
-        volumePages.push({ image });
-      }
+      const tmpImageName = `${image}.png`;
+      await convertToPng(image, tmpImageName);
+      volumePages.push({ image: tmpImageName });
+      tmpImages.push(tmpImageName);
     }
   }
 
   console.dir(volumePages);
   const outPdf = `${manga.slug}-v${volume}.pdf`;
   await createPDF(outPdf, volumePages);
+
+  for (const tmpImage of tmpImages) {
+    await fs.promises.rm(tmpImage);
+  }
 
   console.log("done!", outPdf);
 });

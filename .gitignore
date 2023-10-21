@@ -4,6 +4,7 @@
 *.gif
 *.pdf
 *.done
+*.bmp
 /cache
 /cache-*
 /node_modules
