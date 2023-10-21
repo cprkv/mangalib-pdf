@@ -291,7 +291,6 @@ runAsync(async () => {
 
   console.log("selected volume:", chaptersSelected);
   const volumePages = []; // {text}|{image}
-  const tmpImages = [];
 
   for (const {
     chapter_slug,
@@ -312,21 +311,17 @@ runAsync(async () => {
 
     volumePages.push({ text: chapterName });
     for (const image of chapterPages) {
-      // skip inappropriate formats
-      const tmpImageName = `${image}.png`;
-      await convertToPng(image, tmpImageName);
-      volumePages.push({ image: tmpImageName });
-      tmpImages.push(tmpImageName);
+      const convertedImageName = `${image}.png`;
+      if (!fs.existsSync(convertedImageName)) {
+        await convertToPng(image, convertedImageName);
+      }
+      volumePages.push({ image: convertedImageName });
     }
   }
 
   console.dir(volumePages);
   const outPdf = `${manga.slug}-v${volume}.pdf`;
   await createPDF(outPdf, volumePages);
-
-  for (const tmpImage of tmpImages) {
-    await fs.promises.rm(tmpImage);
-  }
 
   console.log("done!", outPdf);
 });
