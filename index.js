@@ -10,6 +10,7 @@ const argv = yargs(hideBin(process.argv)).argv;
 const sa = require("superagent");
 const cheerio = require("cheerio");
 const PDFDocument = require("pdfkit");
+const maxThreads = require("os").cpus().length;
 
 const { session } = require("./config.json");
 
@@ -17,6 +18,15 @@ const mangaUrl = argv.url;
 if (!mangaUrl) {
   console.error("--url argument missing");
   process.exit(-1);
+}
+
+async function threadify(initialData, process) {
+  const pAll = (await import("p-all")).default;
+  const tasks = initialData.map((input) => () => process(input));
+  const results = await pAll(tasks, {
+    concurency: maxThreads,
+  });
+  return results;
 }
 
 function withAuthorization(req) {
@@ -217,27 +227,22 @@ async function downloadChapter(mangaName, chapterUrl) {
     fs.mkdirSync(mangaName);
   }
 
-  for (const page of pages) {
+  const images = await threadify(pages, async (page) => {
     const { num, urls } = page;
-
     for (const url of urls) {
       try {
         const extension = path.extname(url);
         const outfile = path.join(mangaName, num + extension);
         await downloadFile(url, outfile);
-        page.file = outfile;
-        break;
+        return outfile;
       } catch (err) {
         console.log(`error download image: ${err}`);
       }
     }
+    throw new Error(`error downloading image`);
+  });
 
-    if (!page.file) {
-      throw new Error(`error downloading image`);
-    }
-  }
-
-  return pages.map((x) => x.file);
+  return images;
 }
 
 function runAsync(func) {
@@ -310,12 +315,17 @@ runAsync(async () => {
     const chapterPages = await downloadChapter(chapterNameSlug, chapterUrl);
 
     volumePages.push({ text: chapterName });
-    for (const image of chapterPages) {
+
+    const convertedImages = await threadify(chapterPages, async (image) => {
       const convertedImageName = `${image}.png`;
       if (!fs.existsSync(convertedImageName)) {
         await convertToPng(image, convertedImageName);
       }
-      volumePages.push({ image: convertedImageName });
+      return convertedImageName;
+    });
+
+    for (const image of convertedImages) {
+      volumePages.push({ image });
     }
   }
 
