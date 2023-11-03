@@ -7,5 +7,7 @@
 *.bmp
 /cache
 /cache-*
+/out
+/tmp
 /node_modules
 config.json

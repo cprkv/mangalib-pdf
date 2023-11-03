@@ -223,8 +223,13 @@ async function downloadChapter(mangaName, chapterUrl) {
     pages.push({ num, urls });
   }
 
-  if (!fs.existsSync(mangaName)) {
-    fs.mkdirSync(mangaName);
+  if (!fs.existsSync("./tmp")) {
+    fs.mkdirSync("./tmp");
+  }
+
+  const outDir = `./tmp/${mangaName}`;
+  if (!fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir);
   }
 
   for (const page of pages) {
@@ -233,7 +238,7 @@ async function downloadChapter(mangaName, chapterUrl) {
     for (const url of urls) {
       try {
         const extension = path.extname(url);
-        const outfile = path.join(mangaName, num + extension);
+        const outfile = path.join(outDir, num + extension);
         await downloadFile(url, outfile);
         page.file = outfile;
         break;
@@ -335,7 +340,12 @@ runAsync(async () => {
   }
 
   console.dir(volumePages);
-  const outPdf = `${manga.slug}-v${volume}.pdf`;
+
+  if (!fs.existsSync("./out")) {
+    fs.mkdirSync("./out");
+  }
+
+  const outPdf = `./out/${manga.slug}-v${volume}.pdf`;
   await createPDF(outPdf, volumePages);
 
   console.log("done!", outPdf);
