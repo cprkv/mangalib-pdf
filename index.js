@@ -227,22 +227,27 @@ async function downloadChapter(mangaName, chapterUrl) {
     fs.mkdirSync(mangaName);
   }
 
-  const images = await threadify(pages, async (page) => {
+  for (const page of pages) {
     const { num, urls } = page;
+
     for (const url of urls) {
       try {
         const extension = path.extname(url);
         const outfile = path.join(mangaName, num + extension);
         await downloadFile(url, outfile);
-        return outfile;
+        page.file = outfile;
+        break;
       } catch (err) {
         console.log(`error download image: ${err}`);
       }
     }
-    throw new Error(`error downloading image`);
-  });
 
-  return images;
+    if (!page.file) {
+      throw new Error(`error downloading image`);
+    }
+  }
+
+  return pages.map((x) => x.file);
 }
 
 function runAsync(func) {
