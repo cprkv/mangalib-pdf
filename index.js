@@ -57,7 +57,7 @@ async function isOkImage(path) {
 
 async function convertToPng(imagePath, convertPath) {
   console.log(`converting image: ${imagePath} -> ${convertPath}`);
-  const p = spawn(`./image-magic/magick.exe`, [imagePath, convertPath]);
+  const p = spawn(`./image-magic/magick.exe`, [imagePath + "[0]", convertPath]);
   return new Promise((resolve) => {
     p.stdout.on("data", (x) => {
       process.stdout.write(x.toString());
