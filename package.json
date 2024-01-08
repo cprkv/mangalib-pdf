@@ -12,6 +12,7 @@
     "cheerio": "^1.0.0-rc.12",
     "p-all": "^5.0.0",
     "pdfkit": "^0.13.0",
+    "selenium-webdriver": "^4.16.0",
     "superagent": "^8.0.9",
     "yargs": "^17.7.2"
   }

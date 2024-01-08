@@ -6,6 +6,7 @@ const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { spawn } = require("node:child_process");
 const argv = yargs(hideBin(process.argv)).argv;
+const selenium = require("selenium-webdriver");
 
 const sa = require("superagent");
 const cheerio = require("cheerio");
@@ -77,14 +78,46 @@ async function convertToPng(imagePath, convertPath) {
 
 async function getHtml(url) {
   const headers = {
-    "user-agent": "curl/7.84.0",
-    accept: "*/*",
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     cookie: "mangalib_session=",
   };
   const page = await withAuthorization(
     sa.get(url).withCredentials().set(headers).http2()
   );
   return page.text;
+}
+
+async function runWebDriver(url, title, func) {
+  const driver = await new selenium.Builder().forBrowser("firefox").build();
+  let data;
+  try {
+    await driver.get(url);
+    await driver.wait(selenium.until.titleContains(title), 5000);
+    data = await driver.executeScript(func);
+    console.log("data arrived: " + JSON.stringify(data, null, 2));
+  } finally {
+    await driver.quit();
+  }
+  return data;
+}
+
+async function getMangaDataWebDriver(url) {
+  return runWebDriver(url, "Читать", function () {
+    return window.__DATA__;
+  });
+}
+
+async function getChapterDataWebDriver(url) {
+  return runWebDriver(url, "Чтение", function () {
+    return {
+      data: window.__DATA__,
+      pg: window.__pg,
+      info: window.__info,
+    };
+  });
 }
 
 async function getMangaData(html) {
@@ -120,11 +153,11 @@ async function getWithCacheAsync(name, creator) {
   console.log(`cache ${name} -> ${cacheFile}`);
 
   if (fs.existsSync(cacheFile)) {
-    return fs.readFileSync(cacheFile, "utf-8");
+    return JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
   }
 
   const data = await creator();
-  fs.writeFileSync(cacheFile, data);
+  fs.writeFileSync(cacheFile, JSON.stringify(data));
   return data;
 }
 
@@ -136,7 +169,12 @@ async function downloadFile(url, outfile) {
   }
 
   console.log(`downloading ${url} to ${outfile}`);
-  const req = withAuthorization(sa.get(encodeURI(url)));
+  const req = withAuthorization(
+    sa.get(encodeURI(url)).timeout({
+      response: 1000,
+      deadline: 5000,
+    })
+  );
   const res = await req;
 
   if (res.status !== 200) {
@@ -207,17 +245,16 @@ async function createPDF(outFile, pages) {
 }
 
 async function downloadChapter(mangaName, chapterUrl) {
-  const html = await getWithCacheAsync(chapterUrl, async () =>
-    getHtml(chapterUrl)
+  const { pg, info } = await getWithCacheAsync(chapterUrl, async () =>
+    getChapterDataWebDriver(chapterUrl)
   );
-  const window = await getMangaData(html);
 
   const pages = [];
-  for (const { p, u } of window.__pg) {
+  for (const { p, u } of pg) {
     const num = p;
     const urls = [];
-    for (key of Object.keys(window.__info.servers)) {
-      const url = window.__info.servers[key] + window.__info.img.url + u;
+    for (key of Object.keys(info.servers)) {
+      const url = info.servers[key] + info.img.url + u;
       urls.push(url);
     }
     pages.push({ num, urls });
@@ -271,14 +308,13 @@ function groupBy(xs, key) {
 }
 
 runAsync(async () => {
-  const html = await getWithCacheAsync(mangaUrl, async () => getHtml(mangaUrl));
-  const window = await getMangaData(html);
-
-  const { manga, chapters } = window.__DATA__;
+  const { manga, chapters } = await getWithCacheAsync(
+    mangaUrl,
+    async () => await getMangaDataWebDriver(mangaUrl)
+  );
 
   const mangaName = manga.rusName || manga.engName || manga.slug;
   if (!mangaName) {
-    console.dir(window.__DATA__);
     throw new Error("no manga name!");
   }
 
