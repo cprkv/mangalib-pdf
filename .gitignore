@@ -2,3 +2,8 @@
 /bin
 /installer/*.exe
 /installer/Output/*
+
+/cache
+/out
+/tmp
+/node_modules
