@@ -3,17 +3,17 @@ const path = require("path");
 const crypto = require("crypto");
 const url = require("url");
 const yargs = require("yargs/yargs");
+const readline = require("readline");
 const { hideBin } = require("yargs/helpers");
 const { spawn } = require("node:child_process");
 const argv = yargs(hideBin(process.argv)).argv;
 const selenium = require("selenium-webdriver");
 
 const sa = require("superagent");
-const cheerio = require("cheerio");
 const PDFDocument = require("pdfkit");
 const maxThreads = require("os").cpus().length;
 
-const { session } = require("./config.json");
+let webDriver;
 
 const mangaUrl = argv.url;
 if (!mangaUrl) {
@@ -30,14 +30,9 @@ async function threadify(initialData, process) {
   return results;
 }
 
-function withAuthorization(req) {
+function withReferer(req) {
   const mangaUrlParsed = url.parse(mangaUrl);
   const referer = `${mangaUrlParsed.protocol}//${mangaUrlParsed.host}`;
-  if (session) {
-    return req
-      .set("referer", referer)
-      .set("cookie", `mangalib_session=${session}`);
-  }
   return req.set("referer", referer);
 }
 
@@ -56,9 +51,14 @@ async function isOkImage(path) {
   });
 }
 
-async function convertToPng(imagePath, convertPath) {
+async function convertImage(imagePath, convertPath) {
   console.log(`converting image: ${imagePath} -> ${convertPath}`);
-  const p = spawn(`./image-magic/magick.exe`, [imagePath + "[0]", convertPath]);
+  const p = spawn(`./image-magic/magick.exe`, [
+    imagePath + "[0]",
+    "-quality",
+    "90",
+    convertPath,
+  ]);
   return new Promise((resolve) => {
     p.stdout.on("data", (x) => {
       process.stdout.write(x.toString());
@@ -76,71 +76,57 @@ async function convertToPng(imagePath, convertPath) {
   });
 }
 
-async function getHtml(url) {
-  const headers = {
-    "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-    accept:
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    cookie: "mangalib_session=",
-  };
-  const page = await withAuthorization(
-    sa.get(url).withCredentials().set(headers).http2()
-  );
-  return page.text;
+async function convertToSuitableFormat(imagePath) {
+  const convertedImageName = `${imagePath}.jpg`;
+  if (!fs.existsSync(convertedImageName)) {
+    await convertImage(imagePath, convertedImageName);
+  }
+  return convertedImageName;
 }
 
-async function runWebDriver(url, title, func) {
-  const driver = await new selenium.Builder().forBrowser("firefox").build();
-  let data;
-  try {
-    await driver.get(url);
-    await driver.wait(selenium.until.titleContains(title), 5000);
-    data = await driver.executeScript(func);
-    console.log("data arrived: " + JSON.stringify(data, null, 2));
-  } finally {
-    await driver.quit();
-  }
-  return data;
+async function runWebDriver(url, title, driverAction) {
+  await webDriver.get(url);
+  await webDriver.wait(selenium.until.titleContains(title), 5000);
+  const result = await driverAction(webDriver);
+  console.log("runWebDriver result: " + JSON.stringify(result, null, 2));
+  return result;
+}
+
+async function runWebDriverConsole(url, title, action) {
+  return runWebDriver(url, title, async function (driver) {
+    return driver.executeScript(action);
+  });
 }
 
 async function getMangaDataWebDriver(url) {
-  return runWebDriver(url, "Читать", function () {
+  return runWebDriverConsole(url, "Читать", function () {
     return window.__DATA__;
   });
 }
 
+async function authorize(url) {
+  return runWebDriver(url, "Читать", async function () {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    return new Promise((resolve) =>
+      rl.question("АВТОРИЗАЦИЯ. По успеху, нажмите Enter...", () => {
+        rl.close();
+        resolve();
+      })
+    );
+  });
+}
+
 async function getChapterDataWebDriver(url) {
-  return runWebDriver(url, "Чтение", function () {
+  return runWebDriverConsole(url, "Чтение", function () {
     return {
       data: window.__DATA__,
       pg: window.__pg,
       info: window.__info,
     };
   });
-}
-
-async function getMangaData(html) {
-  const $ = cheerio.load(html);
-  const scripts = [$("#pg").text()];
-
-  $("script").each(function () {
-    const current = $(this);
-    if (current.text() && current.text().includes("window.__DATA__")) {
-      scripts.push(current.text());
-    }
-  });
-
-  if (scripts.length != 2) {
-    throw new Error("something wrong with scripts. no __DATA__ found?");
-  }
-
-  const window = {};
-  for (const script of scripts) {
-    eval(script);
-  }
-
-  return window;
 }
 
 async function getWithCacheAsync(name, creator) {
@@ -169,7 +155,7 @@ async function downloadFile(url, outfile) {
   }
 
   console.log(`downloading ${url} to ${outfile}`);
-  const req = withAuthorization(
+  const req = withReferer(
     sa.get(encodeURI(url)).timeout({
       response: 1000,
       deadline: 5000,
@@ -308,81 +294,88 @@ function groupBy(xs, key) {
 }
 
 runAsync(async () => {
-  const { manga, chapters } = await getWithCacheAsync(
-    mangaUrl,
-    async () => await getMangaDataWebDriver(mangaUrl)
-  );
+  webDriver = await new selenium.Builder().forBrowser("firefox").build();
+  console.log("web driver created");
 
-  const mangaName = manga.rusName || manga.engName || manga.slug;
-  if (!mangaName) {
-    throw new Error("no manga name!");
-  }
-
-  console.log(`manga name: ${mangaName}`);
-
-  const chaptersByVolume = groupBy(chapters.list, "chapter_volume");
-  console.log(`volumes: ${Object.keys(chaptersByVolume).join(",")}`);
-
-  let volume = argv.volume;
-  if (!volume) {
-    console.error("--volume argument missing");
-    process.exit(-1);
-  }
-
-  volume = volume.toString().trim();
-
-  const chaptersSelected = chapters.list.filter(
-    (x) => x.chapter_volume == volume
-  );
-  if (chaptersSelected.length == 0) {
-    throw new Error(`volume '${volume}' not found`);
-  }
-
-  chaptersSelected.sort((a, b) => +a.chapter_number - +b.chapter_number);
-
-  console.log("selected volume:", chaptersSelected);
-  const volumePages = []; // {text}|{image}
-
-  for (const {
-    chapter_slug,
-    chapter_name,
-    chapter_number,
-    chapter_volume,
-  } of chaptersSelected) {
-    const chapterNameSlug = `${manga.slug}-v${chapter_volume}-c${chapter_number}`;
-    const chapterName = [
-      { h1: mangaName },
-      { h2: `Том ${chapter_volume}` },
-      { h3: `Глава ${chapter_number}: ${chapter_name}` },
-    ];
-    const chapterUrl = `${mangaUrl}/v${chapter_volume}/c${chapter_number}`;
-    console.log(chapterNameSlug, chapterUrl);
-
-    const chapterPages = await downloadChapter(chapterNameSlug, chapterUrl);
-
-    volumePages.push({ text: chapterName });
-
-    const convertedImages = await threadify(chapterPages, async (image) => {
-      const convertedImageName = `${image}.png`;
-      if (!fs.existsSync(convertedImageName)) {
-        await convertToPng(image, convertedImageName);
-      }
-      return convertedImageName;
-    });
-
-    for (const image of convertedImages) {
-      volumePages.push({ image });
+  try {
+    if (argv.auth) {
+      await authorize(mangaUrl);
     }
+
+    const { manga, chapters } = await getWithCacheAsync(
+      mangaUrl,
+      async () => await getMangaDataWebDriver(mangaUrl)
+    );
+
+    const mangaName = manga.rusName || manga.engName || manga.slug;
+    if (!mangaName) {
+      throw new Error("no manga name!");
+    }
+
+    console.log(`manga name: ${mangaName}`);
+
+    const chaptersByVolume = groupBy(chapters.list, "chapter_volume");
+    console.log(`volumes: ${Object.keys(chaptersByVolume).join(",")}`);
+
+    let volume = argv.volume;
+    if (!volume) {
+      console.error("--volume argument missing");
+      process.exit(-1);
+    }
+
+    volume = volume.toString().trim();
+
+    const chaptersSelected = chapters.list.filter(
+      (x) => x.chapter_volume == volume
+    );
+    if (chaptersSelected.length == 0) {
+      throw new Error(`volume '${volume}' not found`);
+    }
+
+    chaptersSelected.sort((a, b) => +a.chapter_number - +b.chapter_number);
+
+    console.log("selected volume:", chaptersSelected);
+    const volumePages = []; // {text}|{image}
+
+    for (const {
+      chapter_slug,
+      chapter_name,
+      chapter_number,
+      chapter_volume,
+    } of chaptersSelected) {
+      const chapterNameSlug = `${manga.slug}-v${chapter_volume}-c${chapter_number}`;
+      const chapterName = [
+        { h1: mangaName },
+        { h2: `Том ${chapter_volume}` },
+        { h3: `Глава ${chapter_number}: ${chapter_name}` },
+      ];
+      const chapterUrl = `${mangaUrl}/v${chapter_volume}/c${chapter_number}`;
+      console.log(chapterNameSlug, chapterUrl);
+
+      const chapterPages = await downloadChapter(chapterNameSlug, chapterUrl);
+
+      volumePages.push({ text: chapterName });
+
+      const convertedImages = await threadify(chapterPages, async (image) => {
+        return await convertToSuitableFormat(image);
+      });
+
+      for (const image of convertedImages) {
+        volumePages.push({ image });
+      }
+    }
+
+    console.dir(volumePages);
+
+    if (!fs.existsSync("./out")) {
+      fs.mkdirSync("./out");
+    }
+
+    const outPdf = `./out/${manga.slug}-v${volume}.pdf`;
+    await createPDF(outPdf, volumePages);
+
+    console.log("done!", outPdf);
+  } finally {
+    await webDriver.quit();
   }
-
-  console.dir(volumePages);
-
-  if (!fs.existsSync("./out")) {
-    fs.mkdirSync("./out");
-  }
-
-  const outPdf = `./out/${manga.slug}-v${volume}.pdf`;
-  await createPDF(outPdf, volumePages);
-
-  console.log("done!", outPdf);
 });
