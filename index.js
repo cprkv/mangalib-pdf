@@ -11,6 +11,7 @@ const selenium = require("selenium-webdriver");
 
 const sa = require("superagent");
 const PDFDocument = require("pdfkit");
+const { assert } = require("node:console");
 const maxThreads = require("os").cpus().length;
 
 let webDriver;
@@ -98,14 +99,16 @@ async function runWebDriverConsole(url, title, action) {
   });
 }
 
-async function getMangaDataWebDriver(url) {
-  return runWebDriverConsole(url, "Читать", function () {
-    return window.__DATA__;
+async function getBeginReadButton(url) {
+  const res = await runWebDriverConsole(url, "• MangaLIB", function () {
+    return document.querySelector(".ir_by > a").href;
   });
+  assert(res);
+  return res;
 }
 
 async function authorize(url) {
-  return runWebDriver(url, "Читать", async function () {
+  return runWebDriver(url, "• MangaLIB", async function () {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -157,8 +160,8 @@ async function downloadFile(url, outfile) {
   console.log(`downloading ${url} to ${outfile}`);
   const req = withReferer(
     sa.get(encodeURI(url)).timeout({
-      response: 1000,
-      deadline: 5000,
+      response: 5000,
+      deadline: 10000,
     })
   );
   const res = await req;
@@ -230,27 +233,31 @@ async function createPDF(outFile, pages) {
   });
 }
 
-async function downloadChapter(mangaName, chapterUrl) {
-  const { pg, info } = await getWithCacheAsync(chapterUrl, async () =>
-    getChapterDataWebDriver(chapterUrl)
+async function downloadChapter(chapterNameSlug, mangaId, chapter) {
+  const chapterInfo = await getWithCacheAsync(
+    mangaUrl + ".chapterInfo-" + chapter.number,
+    async () =>
+      await sa
+        .get(
+          `https://api.cdnlibs.org/api/manga/${mangaId}/chapter?number=${chapter.number}&volume=${chapter.volume}`
+        )
+        .timeout({
+          response: 1000,
+          deadline: 5000,
+        })
+        .then((x) => JSON.parse(x.text).data)
   );
 
   const pages = [];
-  for (const { p, u } of pg) {
-    const num = p;
-    const urls = [];
-    for (key of Object.keys(info.servers)) {
-      const url = info.servers[key] + info.img.url + u;
-      urls.push(url);
-    }
-    pages.push({ num, urls });
+  for (const { slug, url } of chapterInfo.pages) {
+    pages.push({ num: slug, urls: [`https://img33.imgslib.link${url}`] });
   }
 
   if (!fs.existsSync("./tmp")) {
     fs.mkdirSync("./tmp");
   }
 
-  const outDir = `./tmp/${mangaName}`;
+  const outDir = `./tmp/${chapterNameSlug}`;
   if (!fs.existsSync(outDir)) {
     fs.mkdirSync(outDir);
   }
@@ -302,19 +309,49 @@ runAsync(async () => {
       await authorize(mangaUrl);
     }
 
-    const { manga, chapters } = await getWithCacheAsync(
+    const beginReadLink = await getWithCacheAsync(
       mangaUrl,
-      async () => await getMangaDataWebDriver(mangaUrl)
+      async () => await getBeginReadButton(mangaUrl)
+    );
+    const linkParts = new URL(beginReadLink).pathname.split("/");
+    const mangaId = linkParts[2];
+    console.log(`manga id: ${mangaId}`);
+
+    const chapters = await getWithCacheAsync(
+      mangaUrl + ".chapters",
+      async () =>
+        await sa
+          .get(`https://api.cdnlibs.org/api/manga/${mangaId}/chapters`)
+          .timeout({
+            response: 1000,
+            deadline: 5000,
+          })
+          .then((x) => JSON.parse(x.text).data)
     );
 
-    const mangaName = manga.rusName || manga.engName || manga.slug;
+    const info = await getWithCacheAsync(
+      mangaUrl + ".info",
+      async () =>
+        await sa
+          .get(
+            `https://api.cdnlibs.org/api/manga/${mangaId}?fields[]=user&fields[]=metadata&fields[]=metadata.count&fields[]=metadata.close_comments&fields[]=chap_count&fields[]=close_view`
+          )
+          .timeout({
+            response: 5000,
+            deadline: 10000,
+          })
+          .then((x) => JSON.parse(x.text).data)
+    );
+
+    // TODO: parse title
+    const mangaName = info.rus_name || info.eng_name || info.slug;
     if (!mangaName) {
       throw new Error("no manga name!");
     }
 
     console.log(`manga name: ${mangaName}`);
 
-    const chaptersByVolume = groupBy(chapters.list, "chapter_volume");
+    const chaptersByVolume = groupBy(chapters, "volume");
     console.log(`volumes: ${Object.keys(chaptersByVolume).join(",")}`);
 
     let volume = argv.volume;
@@ -325,34 +362,34 @@ runAsync(async () => {
 
     volume = volume.toString().trim();
 
-    const chaptersSelected = chapters.list.filter(
-      (x) => x.chapter_volume == volume
-    );
+    const chaptersSelected = chapters.filter((x) => x.volume == volume);
     if (chaptersSelected.length == 0) {
       throw new Error(`volume '${volume}' not found`);
     }
 
-    chaptersSelected.sort((a, b) => +a.chapter_number - +b.chapter_number);
+    chaptersSelected.sort((a, b) => +a.item_number - +b.item_number);
 
-    console.log("selected volume:", chaptersSelected);
+    console.log(
+      "selected volume:",
+      chaptersSelected.map((x) => x.number).join(" ")
+    );
     const volumePages = []; // {text}|{image}
 
-    for (const {
-      chapter_slug,
-      chapter_name,
-      chapter_number,
-      chapter_volume,
-    } of chaptersSelected) {
-      const chapterNameSlug = `${manga.slug}-v${chapter_volume}-c${chapter_number}`;
+    for (const chapter of chaptersSelected) {
+      const { name, item_number, volume, branches } = chapter;
+      const chapterNameSlug = `${info.slug}-v${volume}-c${item_number}`;
+      const volumeName = name.trim().length ? `Глава ${item_number}: ${name}` : `Глава ${item_number}`;
       const chapterName = [
         { h1: mangaName },
-        { h2: `Том ${chapter_volume}` },
-        { h3: `Глава ${chapter_number}: ${chapter_name}` },
+        { h2: `Том ${volume}` },
+        { h3: volumeName },
       ];
-      const chapterUrl = `${mangaUrl}/v${chapter_volume}/c${chapter_number}`;
-      console.log(chapterNameSlug, chapterUrl);
 
-      const chapterPages = await downloadChapter(chapterNameSlug, chapterUrl);
+      const chapterPages = await downloadChapter(
+        chapterNameSlug,
+        mangaId,
+        chapter
+      );
 
       volumePages.push({ text: chapterName });
 
@@ -371,7 +408,7 @@ runAsync(async () => {
       fs.mkdirSync("./out");
     }
 
-    const outPdf = `./out/${manga.slug}-v${volume}.pdf`;
+    const outPdf = `./out/${info.slug}-v${volume}.pdf`;
     await createPDF(outPdf, volumePages);
 
     console.log("done!", outPdf);
